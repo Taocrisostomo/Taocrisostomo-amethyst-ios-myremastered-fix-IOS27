@@ -1,0 +1,84 @@
+name: Development build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Development build
+    runs-on: macos-15
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          PICK=""
+          for app in $(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V -r); do
+            PICK="$app"
+            break
+          done
+          if [ -n "$PICK" ]; then
+            sudo xcode-select -s "$PICK/Contents/Developer"
+          fi
+          xcodebuild -version
+          SDKPATH_REAL=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDKPATH=$SDKPATH_REAL" >> "$GITHUB_ENV"
+          echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+        run: |
+          brew install make || true
+          brew install --cask temurin@8 || true
+          brew install ldid || true
+
+      - name: Build iOS
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: 14.0
+          CONFIG_CURSEFORGE_API_KEY: ${{ secrets.CONFIG_CURSEFORGE_API_KEY }}
+          BUILD_MOBILEGL: ${{ vars.BUILD_MOBILEGL }}
+        run: |
+          set -o pipefail
+          export PATH=/opt/homebrew/bin:$PATH
+          export SLIMMED=0
+          export BUILD_MOBILEGL="${BUILD_MOBILEGL:-1}"
+          mkdir -p ci-logs
+          gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=2 2>&1 | tee ci-logs/ios-build.log
+          gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=2 TROLLSTORE_JIT_ENT=1 2>&1 | tee ci-logs/ios-build-trollstore.log
+
+      - name: Upload regular ipa
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: com.air-devs.air-ios.ipa
+          path: artifacts/com.air-devs.air-*-ios.ipa
+
+      - name: Upload TrollStore tipa
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: com.air-devs.air-ios-trollstore.tipa
+          path: artifacts/com.air-devs.air-*-ios-trollstore.tipa
+
+      - name: Upload build logs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ios-build-logs
+          path: ci-logs/
+          if-no-files-found: ignore
